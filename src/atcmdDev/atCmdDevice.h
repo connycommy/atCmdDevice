@@ -19,7 +19,9 @@ extern "C" {
 #include "stddef.h"
 #include "stdbool.h"
 
-#define CM_BUFFER_LEN_DEF   128 /*!< buffer length by default*/
+#define CM_CMD_GENERAL_RESPONSE_FROM_ISR                  "\r\nOK\r\n"  /*!< can be used to initialize obj->matchResponseFromIsr*/
+
+#define CM_BUFFER_LEN_DEF   1024 /*!< buffer length by default*/
 #define CM_MAX_NUM_RETRIES   4 /*!< RETRIES NUMBER MAXIMUN by default*/
 
 /**Char no print*/
@@ -35,7 +37,8 @@ typedef enum {
     CM_ERR_TIMEOUT,         /*!< Operation timed out */
     CM_ERR_WAITING,         /*!< Operation waiting*/
     CM_ERR_INVALID_RESPONSE, /*!< Received response was invalid*/
-    CM_ERR_MAX_RETRIES_REACHED  /*!< retries reached send command*/
+    CM_ERR_MAX_RETRIES_REACHED,  /*!< retries reached send command*/
+    CM_ASYNC_EVENT
    // CM_ERR_INVALID_ARG      /*!< Invalid argument */
 
 }cmError_t;
@@ -49,6 +52,7 @@ typedef void (*cmTransmissionHandler_t)(void*, char);  /*!< pointer to function:
 typedef struct {
     volatile char *buffer;
     volatile uint8_t ready;
+    volatile uint8_t asyncEvent; /*!< for urc*/
     size_t len;
     volatile uint16_t index;
 }cmDataRx_t;
@@ -70,6 +74,7 @@ typedef struct _private{
     cmWaitState_t waitState;
     cmApiState_t apiState;
     uint8_t numberRetries;
+    uint8_t atvFormat; /* ATV1 or ATV0*/
 }cmDataPrivate_t;
 
 typedef struct cmData{
@@ -77,10 +82,12 @@ typedef struct cmData{
     cmTransmissionHandler_t txHandler;
     cmDataRx_t  rxData;
     cmDataPrivate_t DataPrivate; /*private data internal implementation*/
+    /*by default in CM_CMD_GENERAL_RESPONSE_FROM_ISR*/
+    char *matchResponseFromIsr; /*respuesta principal para que  driver funcione inicializado*/
 }cmData_t;
 
 /** @brief Macro that can be used to initialize cmData_t instance*/
-#define CM_DATA_INITIALIZER {NULL, NULL,{NULL,0,0,0},{0,0,0}}   
+#define CM_DATA_INITIALIZER {NULL, NULL,{NULL,0,0,0,0},{0,0,0,1},NULL}   
 
 
 
@@ -89,6 +96,8 @@ typedef struct cmData{
 cmError_t cmInit(cmData_t *obj);
 cmError_t cmSendCmd(cmData_t *obj,char* payload,char* expectedResponse,char * buffStr, uint32_t mSec);
 void cmIsrRx(cmData_t *obj, const char rxChar);
+uint8_t cmIsAsyncEvent(cmData_t *obj);
+char* cmGetBufferRecv(cmData_t *obj);
 // getBufferReady
 
 #ifdef __cplusplus

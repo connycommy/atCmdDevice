@@ -2,10 +2,12 @@
 #include <string.h>
 #include <stdio.h>
 
-#define CM_CMD_GENERAL_RESPONSE                  "\r\nOK\r\n"
+#define CM_CMD_ERROR_RESPONSE_FROM_ISR                      "ERROR"  
+#define CM_CMD_URC_RESPONSE_FROM_ISR                      "+QIURC:"  
 
 static cmError_t cmWaitNonBlock(cmData_t *obj, uint32_t msec);
 static cmError_t cmWaitBlock(cmData_t *obj, uint32_t msec);
+static cmError_t cmWrapperWaitNonBlock(cmData_t *obj, uint32_t msec);  /*!< exit when buffer isReady*/
 
 static cmError_t cmWaitForResponse(cmData_t *obj , char *expectedResponse, uint32_t mSec);
 static cmError_t cmMatchResponse(cmData_t *obj, char *expectedResponse);
@@ -15,7 +17,7 @@ static void cmStringTx(cmData_t *obj, char* String);
 //#define ENABLED_WAIT_NONBLOCK
 
 #ifdef ENABLED_WAIT_NONBLOCK
-#define cmWait(obj, msec)    cmWaitNonBlock(obj, msec)
+#define cmWait(obj, msec)    cmWrapperWaitNonBlock(obj, msec)
 #else 
 #define cmWait(obj, msec)    cmWaitBlock(obj, msec)
 #endif
@@ -23,14 +25,18 @@ static void cmStringTx(cmData_t *obj, char* String);
 
 cmError_t cmInit(cmData_t *obj){
     cmError_t retValue = CM_FAIL;
-    
-    if( (obj->tickReadHandler != NULL) && (obj->txHandler != NULL) && (obj->rxData.buffer != NULL))
-        retValue = CM_OK;
-    
-    cmResetObject(obj);
-    if(obj->rxData.len <= 0 )
-        obj->rxData.len = CM_BUFFER_LEN_DEF;
-    
+    if(obj != NULL){
+		if( obj->matchResponseFromIsr == NULL){
+			obj->matchResponseFromIsr = CM_CMD_GENERAL_RESPONSE_FROM_ISR;
+			obj->DataPrivate.atvFormat = 1; 
+		}
+		if( (obj->tickReadHandler != NULL) && (obj->txHandler != NULL) && (obj->rxData.buffer != NULL))
+			retValue = CM_OK;
+		
+		cmResetObject(obj);
+		if(obj->rxData.len <= 0 )
+			obj->rxData.len = CM_BUFFER_LEN_DEF;
+	}
     return retValue;
 }
 
@@ -60,10 +66,22 @@ static cmError_t cmWaitNonBlock(cmData_t *obj, uint32_t msec){
 }
 
 static cmError_t cmWaitBlock(cmData_t *obj, uint32_t msec){
-	while( CM_ERR_WAITING == cmWaitNonBlock(obj, msec) ){}
-	return CM_ERR_TIMEOUT ;
+	cmError_t retVal = CM_ERR_WAITING;
+	while( CM_ERR_WAITING == retVal ){
+		retVal = cmWrapperWaitNonBlock(obj, msec) ;
+	}
+	return retVal ;
 }
 
+/* this function is used for wrapper WaitNonblock and can exit from wait block when buffer is ready*/
+static cmError_t cmWrapperWaitNonBlock(cmData_t *obj, uint32_t msec){
+	cmError_t retVal = CM_ERR_WAITING;
+	retVal = cmWaitNonBlock(obj, msec) ;
+	if(1 == obj->rxData.ready){
+		retVal = CM_ERR_TIMEOUT;
+	}
+	return retVal ;
+}
 cmError_t cmSendCmd(cmData_t *obj, char* payload, char* expectedResponse, char * buffStr, uint32_t mSec){
 
 	cmError_t retValue = CM_FAIL;
@@ -85,7 +103,6 @@ cmError_t cmSendCmd(cmData_t *obj, char* payload, char* expectedResponse, char *
 	}
 	else{
 		retValue = cmWaitForResponse(obj, expectedResponse,mSec);
-        //printf("\nbuff [%s]",obj->rxData.buffer);
 	}
 	
 	/*para que funcione block or non block*/
@@ -95,6 +112,9 @@ cmError_t cmSendCmd(cmData_t *obj, char* payload, char* expectedResponse, char *
 			if( NULL != buffStr ){  /*misra c 15.6*/
 				(void)strcpy(buffStr, (char*)obj->rxData.buffer) ; /*misra c 17.7*/
 			}
+			if(obj->rxData.asyncEvent == 1)
+				retValue = CM_ASYNC_EVENT;  /*if response is invalid and async event*/
+
 			obj->DataPrivate.numberRetries = 0;
 		}
 		obj->DataPrivate.apiState = API_IDLE;  //reset object y envia comando de nuevo
@@ -110,20 +130,22 @@ static cmError_t cmWaitForResponse(cmData_t *obj , char *expectedResponse, uint3
     
 	retWait =  cmWait(obj, mSec); /*Return CM_ERR_WAITING or CM_ERR_TIMEOUT*/
 	retMatchResp = cmMatchResponse(obj, expectedResponse); /*Return Response ok or No match*/
-	
+
     if( (retMatchResp == CM_OK  ) ){
         retVal = CM_OK;
-    }else if( (retMatchResp == CM_ERR_INVALID_RESPONSE) &&  (retWait == CM_ERR_WAITING)){
+    }else if( (retMatchResp == CM_ERR_INVALID_RESPONSE  ) ){
+        retVal = CM_ERR_INVALID_RESPONSE;
+    }else if (retWait == CM_ERR_TIMEOUT){
+        retVal = CM_ERR_TIMEOUT;
+    }else if( (retMatchResp == CM_ERR_WAITING) &&  (retWait == CM_ERR_WAITING)){
         retVal = CM_ERR_WAITING;
-    }else{
-        retVal = CM_ERR_INVALID_RESPONSE;  //invalid response & timeout
     }
 
     return retVal;
 }
 
 static cmError_t cmMatchResponse(cmData_t *obj, char *expectedResponse){
-	cmError_t Rprocess = CM_ERR_INVALID_RESPONSE;
+	cmError_t Rprocess = CM_ERR_WAITING;  /*si no ha llegado nada al buffer*/
 	if((bool)obj->rxData.ready){
 		if( NULL != expectedResponse ){
 			if( NULL != strstr((const char *) obj->rxData.buffer,(char *)expectedResponse) ) {
@@ -159,26 +181,42 @@ void cmIsrRx(cmData_t *obj, const char rxChar){
 	}
 	 obj->rxData.buffer[obj->rxData.index] = (char)0;
 
-     
-     if( (strstr((const char*)obj->rxData.buffer, CM_CMD_GENERAL_RESPONSE) != NULL) ){
+     //TODO: remove strstr and compare character singly
+     if( (strstr((const char*)obj->rxData.buffer, obj->matchResponseFromIsr) != NULL) || 
+	 	(strstr((const char*)obj->rxData.buffer, CM_CMD_ERROR_RESPONSE_FROM_ISR ) != NULL) /*exit when error or ok*/
+		 ){
         obj->rxData.index = 0;
 		obj->rxData.ready = 1; // completed frame
      }
+	 if(strstr((const char*)obj->rxData.buffer, CM_CMD_URC_RESPONSE_FROM_ISR ) != NULL){
+		 if(rxChar == '\n'){
+			obj->rxData.index = 0;
+			obj->rxData.ready = 1; // completed frame
+			obj->rxData.asyncEvent = 1; // async event frame
+		 }
+	 }
 }
 
 static void cmResetObject(cmData_t *obj){
 	(void)memset( (void *) obj->rxData.buffer,0,obj->rxData.len);
-	//obj->StatusFlag=(uint8_t)_DEFAULT;
 	obj->rxData.index = 0;
 	obj->rxData.ready = 0;
+	obj->rxData.asyncEvent = 0;
 	obj->DataPrivate.apiState = API_IDLE; 
-	obj->DataPrivate.apiState = WAIT_IDLE; 
+	obj->DataPrivate.waitState = WAIT_IDLE; 
 }
 
 static void cmStringTx(cmData_t *obj, char* String){
   	int i =0;
-   // printf("cmd : [%s]\n",String);
   	while( '\0' != String[i]  ) {          
 		obj->txHandler(NULL,String[i++]);
 	}
+}
+
+uint8_t cmIsAsyncEvent(cmData_t *obj){
+	return (uint8_t)obj->rxData.asyncEvent;
+}
+
+char* cmGetBufferRecv(cmData_t *obj){
+	return (char*)obj->rxData.buffer;
 }
