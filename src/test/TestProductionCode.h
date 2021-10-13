@@ -1,7 +1,7 @@
 
 #include "unity.h"
 #include "unity_internals.h"
-#include "Ec25.h"
+#include "cellModem.h"
 
 #include <sys/time.h>
 #include <time.h>
@@ -54,11 +54,17 @@ void test_modem_SetApn();
 void test_modem_SetContextProfile();
 void test_modem_GetContextProfile();
 void test_modem_SetDeactContextProfile();
-void test_modem_SMS_SetMessageFormat();
-void test_modem_SMS_SetTextModeParam();
-void test_modem_SMS_SetTeCharacterGsm();
-void test_modem_SMS_SendTextMessage();
-void test_modem_SetOpenSocket();
-void test_modem_GetSocketServStatus();
-void test_modem_GetSocketRecv();
-void test_modem_QIURC_incomming();
+void test_modem_SmsSetMessageFormat();
+void test_modem_SmsSetTextModeParam();
+void test_modem_SmsSetTeCharacterGsm();
+void test_modem_SmsSendNumber();
+void test_modem_SmsSendTextMessage();
+void test_modem_SocketOpen();
+void test_modem_SocketGetServStatus();
+void test_modem_SocketGetRecv();
+void test_modem_QIURC_incoming();
+void test_modem_QIURC_incomingConnection();
+void test_modem_QIURC_closedConnection();
+void test_modem_QIURC_RecvConnection();
+void test_modem_SocketClose();
+void test_modem_SocketSendData();
